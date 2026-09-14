@@ -1,0 +1,22 @@
+# Root level gitignore for FitTrack workspace
+
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+*.env
+
+# Operating System metadata
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Editor / IDE configuration
+.vscode/
+.idea/
+
+# Logs
+*.log

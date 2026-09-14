@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Expo & Web Builds
+.expo/
+dist/
+dist-*/
+web-build/
+expo-export.log
+expo-final.log
+*.log
+
+# Native Application Packages
+*.apk
+*.aab
+*.ipa
+*.app
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# Editor / IDE configuration
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Operating System metadata
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Tooling / Local caches
+.claude/
