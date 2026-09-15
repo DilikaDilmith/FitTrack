@@ -1,7 +1,9 @@
+import api from '../services/api';
 import { userStorage } from './userStorage';
+import { defaultWorkoutData } from './workoutData';
 
 export const STORAGE_KEYS = {
-  CUSTOM_CATEGORIES: 'customCategories', // 👈 Custom Categories
+  CUSTOM_CATEGORIES: 'customCategories', // 👈 Custom Categories (local cache)
   WORKOUT_PLANS: 'workoutPlans',
   WORKOUT_SCHEDULE: 'workoutSchedule',
   COMPLETED_TODAY: 'completedToday',
@@ -10,28 +12,82 @@ export const STORAGE_KEYS = {
   PLAN_PROGRESS: 'planProgress',
 };
 
-// ========== CUSTOM CATEGORIES (User Created) ==========
-// Format: { "Full Body": { emoji: '💥', exercises: [{id, name, sets, reps, isCustom}] } }
+// ========== CUSTOM CATEGORIES (User Created - Backend Synced) ==========
+// Format: { "Full Body": { emoji, exercises, isCustom, editedExercises, deletedIds } }
+
+/**
+ * Load user's workout library customizations.
+ * 1. Try fetching from backend (source of truth).
+ * 2. On success, update local cache and return data.
+ * 3. On failure (offline), fall back to local cache.
+ */
 export const loadCustomCategories = async () => {
   try {
-    const data = await userStorage.getItem(STORAGE_KEYS.CUSTOM_CATEGORIES);
-    return data ? JSON.parse(data) : {};
+    // Try backend first
+    const response = await api.get('/library');
+    const serverCategories = response.data?.categories ?? [];
+
+    // Convert array format → object format used internally
+    const result = {};
+    for (const cat of serverCategories) {
+      result[cat.name] = {
+        emoji: cat.emoji || '⭐',
+        isCustom: cat.isUserCreated || false,
+        exercises: cat.exercises || [],
+        editedExercises: cat.editedExercises || {},
+        deletedIds: cat.deletedIds || [],
+      };
+    }
+
+    // Update local cache
+    await userStorage.setItem(STORAGE_KEYS.CUSTOM_CATEGORIES, JSON.stringify(result));
+    console.log('📚 Library loaded from backend:', Object.keys(result).length, 'categories');
+    return result;
   } catch (error) {
-    console.log('❌ Load custom categories error:', error);
-    return {};
+    // Fallback: use local cache (offline or not logged in)
+    console.log('📦 Library backend unavailable, using local cache:', error.message);
+    try {
+      const data = await userStorage.getItem(STORAGE_KEYS.CUSTOM_CATEGORIES);
+      return data ? JSON.parse(data) : {};
+    } catch {
+      return {};
+    }
   }
 };
 
+/**
+ * Save user's workout library customizations.
+ * 1. Write to local cache immediately (fast UI feedback).
+ * 2. Sync to backend in background (fire-and-forget).
+ */
 export const saveCustomCategories = async (data) => {
   try {
+    // 1. Write local cache immediately
     await userStorage.setItem(
       STORAGE_KEYS.CUSTOM_CATEGORIES,
       JSON.stringify(data)
     );
+
+    // 2. Sync to backend (background, fire-and-forget)
+    const categories = Object.entries(data).map(([name, cat]) => ({
+      name,
+      emoji: cat.emoji || '⭐',
+      isUserCreated: cat.isCustom || false,
+      exercises: cat.exercises || [],
+      editedExercises: cat.editedExercises || {},
+      deletedIds: cat.deletedIds || [],
+    }));
+
+    api.post('/library/sync', { categories }).then(() => {
+      console.log('☁️ Library synced to backend');
+    }).catch((err) => {
+      console.log('⚠️ Library sync failed (will retry on next save):', err.message);
+    });
   } catch (error) {
     console.log('❌ Save custom categories error:', error);
   }
 };
+
 
 // Add new custom category
 export const addCustomCategory = async (name, emoji) => {
@@ -70,13 +126,19 @@ export const deleteCustomCategory = async (name) => {
   }
 };
 
-// Add exercise to custom category
+// Add exercise to category
 export const addExerciseToCategory = async (categoryName, exercise) => {
   try {
     const categories = await loadCustomCategories();
+    const trimmedCategory = categoryName.trim();
 
-    if (!categories[categoryName]) {
-      return { success: false, error: 'Category not found' };
+    if (!categories[trimmedCategory]) {
+      categories[trimmedCategory] = {
+        emoji: '⭐',
+        exercises: [],
+        editedExercises: {},
+        deletedIds: [],
+      };
     }
 
     const newExercise = {
@@ -87,7 +149,11 @@ export const addExerciseToCategory = async (categoryName, exercise) => {
       isCustom: true,
     };
 
-    categories[categoryName].exercises.push(newExercise);
+    if (!Array.isArray(categories[trimmedCategory].exercises)) {
+      categories[trimmedCategory].exercises = [];
+    }
+
+    categories[trimmedCategory].exercises.push(newExercise);
     await saveCustomCategories(categories);
     return { success: true, categories, exercise: newExercise };
   } catch (error) {
@@ -96,16 +162,83 @@ export const addExerciseToCategory = async (categoryName, exercise) => {
   }
 };
 
-// Delete exercise from custom category
+// Update exercise in category
+export const updateExerciseInCategory = async (categoryName, exerciseId, updatedFields) => {
+  try {
+    const categories = await loadCustomCategories();
+    const trimmedCategory = categoryName.trim();
+
+    if (!categories[trimmedCategory]) {
+      categories[trimmedCategory] = {
+        emoji: '⭐',
+        exercises: [],
+        editedExercises: {},
+        deletedIds: [],
+      };
+    }
+
+    if (!categories[trimmedCategory].editedExercises) {
+      categories[trimmedCategory].editedExercises = {};
+    }
+
+    categories[trimmedCategory].editedExercises[exerciseId] = {
+      name: updatedFields.name ? updatedFields.name.trim() : undefined,
+      sets: parseInt(updatedFields.sets),
+      reps: parseInt(updatedFields.reps),
+    };
+
+    if (Array.isArray(categories[trimmedCategory].exercises)) {
+      categories[trimmedCategory].exercises = categories[trimmedCategory].exercises.map((ex) => {
+        if (ex.id === exerciseId) {
+          return {
+            ...ex,
+            name: updatedFields.name ? updatedFields.name.trim() : ex.name,
+            sets: parseInt(updatedFields.sets) || ex.sets,
+            reps: parseInt(updatedFields.reps) || ex.reps,
+          };
+        }
+        return ex;
+      });
+    }
+
+    await saveCustomCategories(categories);
+    return categories;
+  } catch (error) {
+    console.log('❌ Update exercise error:', error);
+    return null;
+  }
+};
+
+// Delete exercise from category
 export const deleteExerciseFromCategory = async (categoryName, exerciseId) => {
   try {
     const categories = await loadCustomCategories();
-    if (categories[categoryName]) {
-      categories[categoryName].exercises = categories[categoryName].exercises.filter(
+    const trimmedCategory = categoryName.trim();
+
+    if (!categories[trimmedCategory]) {
+      categories[trimmedCategory] = {
+        emoji: '⭐',
+        exercises: [],
+        editedExercises: {},
+        deletedIds: [],
+      };
+    }
+
+    if (!Array.isArray(categories[trimmedCategory].deletedIds)) {
+      categories[trimmedCategory].deletedIds = [];
+    }
+
+    if (!categories[trimmedCategory].deletedIds.includes(exerciseId)) {
+      categories[trimmedCategory].deletedIds.push(exerciseId);
+    }
+
+    if (Array.isArray(categories[trimmedCategory].exercises)) {
+      categories[trimmedCategory].exercises = categories[trimmedCategory].exercises.filter(
         (e) => e.id !== exerciseId
       );
-      await saveCustomCategories(categories);
     }
+
+    await saveCustomCategories(categories);
     return categories;
   } catch (error) {
     console.log('❌ Delete exercise error:', error);

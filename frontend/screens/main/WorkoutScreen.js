@@ -9,6 +9,7 @@ import {
   Modal,
   ActivityIndicator,
   ImageBackground,
+  Image,
   Dimensions,
 } from 'react-native';
 import Alert from '../../components/FitAlert';
@@ -18,6 +19,7 @@ import { defaultWorkoutData, weekDays } from '../../utils/workoutData';
 import api from '../../services/api';
 import { useTheme } from '../../context/ThemeContext';
 import CategoryImageCard from '../../components/CategoryImageCard';
+import { getExerciseImage } from '../../utils/exerciseImages';
 import { fitnessImages, categoryColors, SAFE_TOP_PADDING, STATUS_BAR_HEIGHT } from '../../utils/theme';
 import {
   loadCustomCategories,
@@ -25,6 +27,7 @@ import {
   addCustomCategory,
   deleteCustomCategory,
   addExerciseToCategory,
+  updateExerciseInCategory,
   deleteExerciseFromCategory,
   loadWorkoutPlans,
   saveWorkoutPlans,
@@ -69,6 +72,13 @@ const WorkoutScreen = ({ navigation }) => {
   const [newExerciseName, setNewExerciseName] = useState('');
   const [newExerciseSets, setNewExerciseSets] = useState('3');
   const [newExerciseReps, setNewExerciseReps] = useState('12');
+
+  const [editExerciseModal, setEditExerciseModal] = useState(false);
+  const [editingExercise, setEditingExercise] = useState(null);
+  const [editExerciseName, setEditExerciseName] = useState('');
+  const [editExerciseSets, setEditExerciseSets] = useState('3');
+  const [editExerciseReps, setEditExerciseReps] = useState('12');
+  const [isCategoryEditMode, setIsCategoryEditMode] = useState(false);
   const [newPlanName, setNewPlanName] = useState('');
   const [newPlanExercises, setNewPlanExercises] = useState([]);
 
@@ -108,14 +118,85 @@ const WorkoutScreen = ({ navigation }) => {
   );
 
   const getAllCategories = () => {
-    const categories = { ...defaultWorkoutData };
-    Object.keys(customCategories).forEach((name) => {
+    const categories = {};
+
+    // 1. Process Default Categories
+    Object.keys(defaultWorkoutData).forEach((name) => {
+      const defaultCat = defaultWorkoutData[name];
+      const customData = customCategories[name] || {};
+      const customExercises = customData.exercises || [];
+      const deletedIds = customData.deletedIds || [];
+      const editedExercises = customData.editedExercises || {};
+
+      let combinedExercises = defaultCat.exercises
+        .filter((ex) => !deletedIds.includes(ex.id))
+        .map((ex) => {
+          if (editedExercises[ex.id]) {
+            return {
+              ...ex,
+              name: editedExercises[ex.id].name || ex.name,
+              sets: editedExercises[ex.id].sets || ex.sets,
+              reps: editedExercises[ex.id].reps || ex.reps,
+            };
+          }
+          return { ...ex };
+        });
+
+      const existingIds = new Set(combinedExercises.map((e) => e.id));
+      customExercises.forEach((ex) => {
+        if (!existingIds.has(ex.id) && !deletedIds.includes(ex.id)) {
+          let finalEx = { ...ex, isCustom: true };
+          if (editedExercises[ex.id]) {
+            finalEx = {
+              ...finalEx,
+              name: editedExercises[ex.id].name || ex.name,
+              sets: editedExercises[ex.id].sets || ex.sets,
+              reps: editedExercises[ex.id].reps || ex.reps,
+            };
+          }
+          combinedExercises.push(finalEx);
+          existingIds.add(ex.id);
+        }
+      });
+
       categories[name] = {
-        emoji: customCategories[name].emoji || '⭐',
-        exercises: customCategories[name].exercises || [],
-        isCustom: true,
+        emoji: customData.emoji || defaultCat.emoji,
+        exercises: combinedExercises,
+        isCustom: false,
       };
     });
+
+    // 2. Process Custom Categories created by user
+    Object.keys(customCategories).forEach((name) => {
+      if (!categories[name]) {
+        const customData = customCategories[name] || {};
+        const customExercises = customData.exercises || [];
+        const deletedIds = customData.deletedIds || [];
+        const editedExercises = customData.editedExercises || {};
+
+        const finalExercises = customExercises
+          .filter((ex) => !deletedIds.includes(ex.id))
+          .map((ex) => {
+            let item = { ...ex, isCustom: true };
+            if (editedExercises[ex.id]) {
+              item = {
+                ...item,
+                name: editedExercises[ex.id].name || ex.name,
+                sets: editedExercises[ex.id].sets || ex.sets,
+                reps: editedExercises[ex.id].reps || ex.reps,
+              };
+            }
+            return item;
+          });
+
+        categories[name] = {
+          emoji: customData.emoji || '⭐',
+          exercises: finalExercises,
+          isCustom: true,
+        };
+      }
+    });
+
     return categories;
   };
 
@@ -189,39 +270,31 @@ const WorkoutScreen = ({ navigation }) => {
       Alert.alert('Error', 'Please enter exercise name');
       return;
     }
+    if (!selectedCategory) {
+      Alert.alert('Error', 'No category selected');
+      return;
+    }
 
     const exercise = {
       name: newExerciseName,
-      sets: newExerciseSets,
-      reps: newExerciseReps,
+      sets: parseInt(newExerciseSets) || 3,
+      reps: parseInt(newExerciseReps) || 12,
     };
 
-    if (customCategories[selectedCategory]) {
-      const result = await addExerciseToCategory(selectedCategory, exercise);
-      if (result.success) {
-        setCustomCategories(result.categories);
-        setNewExerciseName('');
-        setNewExerciseSets('3');
-        setNewExerciseReps('12');
-        setAddExerciseModal(false);
-        Alert.alert('✅ Added!', `"${exercise.name}" added`);
-      }
+    const result = await addExerciseToCategory(selectedCategory, exercise);
+    if (result.success) {
+      setCustomCategories(result.categories);
+      setNewExerciseName('');
+      setNewExerciseSets('3');
+      setNewExerciseReps('12');
+      setAddExerciseModal(false);
+      Alert.alert('✅ Added!', `"${exercise.name}" added to ${selectedCategory}`);
     } else {
-      Alert.alert('⚠️ Note', 'Default categories cannot be modified.', [
-        {
-          text: 'Create Category',
-          onPress: () => {
-            setAddExerciseModal(false);
-            setCreateCategoryModal(true);
-          },
-        },
-        { text: 'Cancel', style: 'cancel' },
-      ]);
+      Alert.alert('Error', result.error || 'Failed to add exercise');
     }
   };
 
   const handleDeleteExercise = (categoryName, exercise) => {
-    if (!customCategories[categoryName]) return;
     Alert.alert('Delete Exercise', `Delete "${exercise.name}"?`, [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -238,7 +311,48 @@ const WorkoutScreen = ({ navigation }) => {
     ]);
   };
 
-  const toggleCompleted = async (exerciseId, exerciseName) => {
+  const handleStartEditExercise = (exercise) => {
+    setEditingExercise(exercise);
+    setEditExerciseName(exercise.name);
+    setEditExerciseSets(String(exercise.sets || 3));
+    setEditExerciseReps(String(exercise.reps || 12));
+    setEditExerciseModal(true);
+  };
+
+  const handleSaveEditExercise = async () => {
+    if (!editExerciseName.trim()) {
+      Alert.alert('Error', 'Please enter exercise name');
+      return;
+    }
+    if (!selectedCategory || !editingExercise) return;
+
+    const updated = await updateExerciseInCategory(
+      selectedCategory,
+      editingExercise.id,
+      {
+        name: editExerciseName.trim(),
+        sets: parseInt(editExerciseSets) || 3,
+        reps: parseInt(editExerciseReps) || 12,
+      }
+    );
+
+    if (updated !== null) {
+      setCustomCategories(updated);
+      setEditExerciseModal(false);
+      setEditingExercise(null);
+      Alert.alert('✅ Updated!', `"${editExerciseName.trim()}" updated`);
+    } else {
+      Alert.alert('Error', 'Failed to update exercise');
+    }
+  };
+
+  const toggleCompleted = async (exercise, categoryName = 'General') => {
+    const exerciseId = exercise?.id || exercise?.name || String(exercise);
+    const exerciseName = exercise?.name || exerciseId;
+    const sets = parseInt(exercise?.sets) || 3;
+    const reps = parseInt(exercise?.reps) || 12;
+    const duration = Math.max(5, sets * 3);
+
     let updated;
     if (completedToday.includes(exerciseId)) {
       updated = completedToday.filter((id) => id !== exerciseId);
@@ -247,9 +361,9 @@ const WorkoutScreen = ({ navigation }) => {
       try {
         await api.post('/workouts', {
           workoutName: exerciseName,
-          category: 'General',
-          exercises: [{ name: exerciseName, sets: 3, reps: 12 }],
-          duration: 15,
+          category: categoryName || 'General',
+          exercises: [{ name: exerciseName, sets, reps }],
+          duration: duration,
         });
       } catch (error) {
         console.log('❌ Backend save error:', error.message);
@@ -257,6 +371,10 @@ const WorkoutScreen = ({ navigation }) => {
       await addToHistory({
         exerciseId,
         exerciseName,
+        category: categoryName,
+        sets,
+        reps,
+        duration,
         date: new Date().toISOString(),
         time: new Date().toLocaleTimeString('en-US', {
           hour: '2-digit',
@@ -268,7 +386,13 @@ const WorkoutScreen = ({ navigation }) => {
     await saveCompletedToday(updated);
   };
 
-  const handleTogglePlanExercise = async (planId, exerciseId, exerciseName) => {
+  const handleTogglePlanExercise = async (planId, exercise, planCategoryName) => {
+    const exerciseId = exercise?.id || exercise?.name || String(exercise);
+    const exerciseName = exercise?.name || exerciseId;
+    const sets = parseInt(exercise?.sets) || 3;
+    const reps = parseInt(exercise?.reps) || 12;
+    const duration = Math.max(5, sets * 3);
+
     const updatedProgress = await togglePlanExercise(planId, exerciseId);
     if (updatedProgress) {
       setPlanProgress(updatedProgress);
@@ -278,9 +402,9 @@ const WorkoutScreen = ({ navigation }) => {
           const plan = plans.find((p) => p.id === planId);
           await api.post('/workouts', {
             workoutName: exerciseName,
-            category: plan?.name || 'Plan',
-            exercises: [{ name: exerciseName, sets: 3, reps: 12 }],
-            duration: 15,
+            category: plan?.name || planCategoryName || 'Plan',
+            exercises: [{ name: exerciseName, sets, reps }],
+            duration,
           });
         } catch (error) {
           console.log('❌ Backend save error:', error.message);
@@ -288,6 +412,10 @@ const WorkoutScreen = ({ navigation }) => {
         await addToHistory({
           exerciseId,
           exerciseName,
+          category: planCategoryName || 'Plan',
+          sets,
+          reps,
+          duration,
           planId,
           date: new Date().toISOString(),
           time: new Date().toLocaleTimeString('en-US', {
@@ -412,20 +540,59 @@ const WorkoutScreen = ({ navigation }) => {
         style={[S.tabContent, { backgroundColor: theme.background }]}
         showsVerticalScrollIndicator={false}
       >
-        <TouchableOpacity style={S.backButton} onPress={() => setSelectedPlan(null)}>
-          <Text style={[S.backButtonText, { color: theme.primary }]}>
-            ← Back to Plans
-          </Text>
-        </TouchableOpacity>
+        {/* ⭐ HD PLAN HERO BANNER */}
+        <View style={S.categoryHeroContainer}>
+          <ImageBackground
+            source={{ uri: getExerciseImage(plan.exercises[0]?.name, plan.name) }}
+            style={S.categoryHeroImage}
+            imageStyle={{ borderRadius: 24 }}
+          >
+            <LinearGradient
+              colors={['rgba(0,0,0,0.35)', 'rgba(0,0,0,0.5)', 'rgba(8,12,24,0.92)']}
+              locations={[0, 0.45, 1]}
+              style={S.categoryHeroOverlay}
+            >
+              <View style={S.categoryHeroTopRow}>
+                <TouchableOpacity
+                  style={S.categoryHeroBackBtn}
+                  onPress={() => setSelectedPlan(null)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={S.categoryHeroBackText}>← Back to Plans</Text>
+                </TouchableOpacity>
 
-        <View style={S.planDetailHeader}>
-          <Text style={S.planDetailEmoji}>{allDone ? '🏆' : '📋'}</Text>
-          <Text style={[S.planDetailTitle, { color: theme.text }]}>
-            {plan.name}
-          </Text>
-          <Text style={[S.planDetailSubtitle, { color: theme.textSecondary }]}>
-            {total} exercises • Tap each to mark as done
-          </Text>
+                <View style={S.categoryHeroProBadge}>
+                  <Text style={S.categoryHeroProBadgeText}>WORKOUT PLAN</Text>
+                </View>
+              </View>
+
+              <View style={S.categoryHeroBottomContent}>
+                <View style={[S.categoryHeroEmojiCircle, { backgroundColor: theme.primary }]}>
+                  <Text style={S.categoryHeroEmojiText}>{allDone ? '🏆' : '📋'}</Text>
+                </View>
+                <Text style={S.categoryHeroTitleText}>{plan.name}</Text>
+                <View style={S.categoryMetaPillsRow}>
+                  <View style={S.categoryMetaPill}>
+                    <Text style={S.categoryMetaPillText}>
+                      🔥 {total} Exercises
+                    </Text>
+                  </View>
+                  <View style={S.categoryMetaPill}>
+                    <Text style={S.categoryMetaPillText}>
+                      ⏱️ ~{Math.max(20, total * 6)} min
+                    </Text>
+                  </View>
+                  {allDone && (
+                    <View style={[S.categoryMetaPill, { backgroundColor: 'rgba(0,200,83,0.45)' }]}>
+                      <Text style={S.categoryMetaPillText}>
+                        ✅ Completed
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            </LinearGradient>
+          </ImageBackground>
         </View>
 
         <View
@@ -484,68 +651,88 @@ const WorkoutScreen = ({ navigation }) => {
         <Text style={[S.sectionLabel, { color: theme.text }]}>Exercises</Text>
         {plan.exercises.map((exercise, index) => {
           const isDone = isPlanExerciseCompleted(plan.id, exercise.id);
+          const exerciseImg = getExerciseImage(exercise.name, plan.name || 'Plan');
           return (
             <TouchableOpacity
               key={exercise.id}
               style={[
-                S.exerciseItem,
+                S.modernExerciseCard,
                 {
                   backgroundColor: isDone
-                    ? isDark
-                      ? '#1a3a1a'
-                      : '#e8f8f0'
+                    ? isDark ? '#14281E' : '#EDFBF4'
                     : theme.card,
-                  borderColor: theme.border,
-                  borderLeftWidth: isDone ? 4 : 1,
-                  borderLeftColor: isDone ? theme.success : theme.border,
+                  borderColor: isDone ? '#00C853' : theme.border,
+                  marginBottom: 10,
                 },
               ]}
               onPress={() =>
-                handleTogglePlanExercise(plan.id, exercise.id, exercise.name)
+                handleTogglePlanExercise(plan.id, exercise, plan.name)
               }
-              activeOpacity={0.7}
+              activeOpacity={0.8}
             >
-              <View
-                style={[
-                  S.exerciseNumber,
-                  { backgroundColor: theme.cardSecondary },
-                ]}
-              >
-                <Text
-                  style={[
-                    S.exerciseNumberText,
-                    { color: isDone ? theme.success : theme.textSecondary },
-                  ]}
-                >
-                  {index + 1}
-                </Text>
+              {/* HD Thumbnail */}
+              <View style={S.exerciseThumbContainer}>
+                <Image
+                  source={{ uri: exerciseImg }}
+                  style={S.exerciseThumbImage}
+                  resizeMode="cover"
+                />
+                {isDone && (
+                  <View style={S.exerciseThumbDoneOverlay}>
+                    <Text style={S.exerciseThumbDoneCheck}>✓</Text>
+                  </View>
+                )}
               </View>
-              <View style={S.exerciseInfo}>
+
+              {/* Middle Info */}
+              <View style={S.exerciseCardInfo}>
                 <Text
                   style={[
-                    S.exerciseName,
+                    S.modernExerciseName,
                     {
                       color: isDone ? theme.textSecondary : theme.text,
                       textDecorationLine: isDone ? 'line-through' : 'none',
                     },
                   ]}
+                  numberOfLines={1}
                 >
                   {exercise.name}
                 </Text>
-                <Text style={[S.exerciseDetails, { color: theme.textSecondary }]}>
-                  {exercise.sets} Sets × {exercise.reps} Reps
-                </Text>
+                <View style={S.exerciseChipsRow}>
+                  <View
+                    style={[
+                      S.exerciseChip,
+                      { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' },
+                    ]}
+                  >
+                    <Text style={[S.exerciseChipText, { color: theme.textSecondary }]}>
+                      ⚡ {exercise.sets} Sets
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      S.exerciseChip,
+                      { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' },
+                    ]}
+                  >
+                    <Text style={[S.exerciseChipText, { color: theme.textSecondary }]}>
+                      🔄 {exercise.reps} Reps
+                    </Text>
+                  </View>
+                </View>
               </View>
+
+              {/* Right Checkbox */}
               <View
                 style={[
-                  S.checkbox,
+                  S.modernCheckbox,
                   {
-                    borderColor: isDone ? theme.success : theme.border,
-                    backgroundColor: isDone ? theme.success : 'transparent',
+                    backgroundColor: isDone ? '#00C853' : 'transparent',
+                    borderColor: isDone ? '#00C853' : (isDark ? '#4B5563' : '#CBD5E1'),
                   },
                 ]}
               >
-                {isDone && <Text style={S.checkmark}>✓</Text>}
+                {isDone && <Text style={S.modernCheckmark}>✓</Text>}
               </View>
             </TouchableOpacity>
           );
@@ -693,47 +880,86 @@ const WorkoutScreen = ({ navigation }) => {
               <Text style={[S.sectionLabel, { color: theme.text }]}>Exercises</Text>
               {todayExercises.map((exercise, index) => {
                 const isDone = completedToday.includes(exercise.id);
+                const exerciseImg = getExerciseImage(exercise.name, exercise.categoryName || 'Today');
                 return (
                   <TouchableOpacity
                     key={exercise.id}
                     style={[
-                      S.exerciseItem,
+                      S.modernExerciseCard,
                       {
                         backgroundColor: isDone
-                          ? isDark ? '#1a3a1a' : '#e8f8f0'
+                          ? isDark ? '#14281E' : '#EDFBF4'
                           : theme.card,
-                        borderColor: theme.border,
-                        borderLeftWidth: isDone ? 4 : 0,
-                        borderLeftColor: isDone ? theme.success : 'transparent',
+                        borderColor: isDone ? '#00C853' : theme.border,
+                        marginBottom: 10,
                       },
                     ]}
-                    onPress={() => toggleCompleted(exercise.id, exercise.name)}
-                    activeOpacity={0.7}
+                    onPress={() => toggleCompleted(exercise, exercise.categoryName || 'Today')}
+                    activeOpacity={0.8}
                   >
-                    <View style={[S.exerciseNumBadge, { backgroundColor: isDone ? theme.success : theme.primary }]}>
-                      <Text style={S.exerciseNumText}>{isDone ? '✓' : index + 1}</Text>
+                    {/* HD Thumbnail */}
+                    <View style={S.exerciseThumbContainer}>
+                      <Image
+                        source={{ uri: exerciseImg }}
+                        style={S.exerciseThumbImage}
+                        resizeMode="cover"
+                      />
+                      {isDone && (
+                        <View style={S.exerciseThumbDoneOverlay}>
+                          <Text style={S.exerciseThumbDoneCheck}>✓</Text>
+                        </View>
+                      )}
                     </View>
-                    <View style={S.exerciseInfo}>
+
+                    {/* Middle Info */}
+                    <View style={S.exerciseCardInfo}>
                       <Text
                         style={[
-                          S.exerciseName,
+                          S.modernExerciseName,
                           {
                             color: isDone ? theme.textSecondary : theme.text,
                             textDecorationLine: isDone ? 'line-through' : 'none',
                           },
                         ]}
+                        numberOfLines={1}
                       >
                         {exercise.name}
                       </Text>
-                      <Text style={[S.exerciseDetails, { color: theme.textSecondary }]}>
-                        {exercise.sets} Sets × {exercise.reps} Reps
-                      </Text>
+                      <View style={S.exerciseChipsRow}>
+                        <View
+                          style={[
+                            S.exerciseChip,
+                            { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' },
+                          ]}
+                        >
+                          <Text style={[S.exerciseChipText, { color: theme.textSecondary }]}>
+                            ⚡ {exercise.sets} Sets
+                          </Text>
+                        </View>
+                        <View
+                          style={[
+                            S.exerciseChip,
+                            { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' },
+                          ]}
+                        >
+                          <Text style={[S.exerciseChipText, { color: theme.textSecondary }]}>
+                            🔄 {exercise.reps} Reps
+                          </Text>
+                        </View>
+                      </View>
                     </View>
-                    <View style={[S.checkbox, {
-                      borderColor: isDone ? theme.success : theme.border,
-                      backgroundColor: isDone ? theme.success : 'transparent',
-                    }]}>
-                      {isDone && <Text style={S.checkmark}>✓</Text>}
+
+                    {/* Right Checkbox */}
+                    <View
+                      style={[
+                        S.modernCheckbox,
+                        {
+                          backgroundColor: isDone ? '#00C853' : 'transparent',
+                          borderColor: isDone ? '#00C853' : (isDark ? '#4B5563' : '#CBD5E1'),
+                        },
+                      ]}
+                    >
+                      {isDone && <Text style={S.modernCheckmark}>✓</Text>}
                     </View>
                   </TouchableOpacity>
                 );
@@ -753,7 +979,7 @@ const WorkoutScreen = ({ navigation }) => {
     if (selectedCategory) {
       const cat = categories[selectedCategory];
       if (!cat) return null;
-      const isCustomCategory = !!customCategories[selectedCategory];
+      const isCustomCategory = !defaultWorkoutData[selectedCategory];
       const catColors = categoryColors[selectedCategory] || categoryColors.Chest;
 
       return (
@@ -761,86 +987,131 @@ const WorkoutScreen = ({ navigation }) => {
           style={[S.tabContent, { backgroundColor: theme.background }]}
           showsVerticalScrollIndicator={false}
         >
-          <TouchableOpacity
-            style={S.backButton}
-            onPress={() => setSelectedCategory(null)}
-          >
-            <Text style={[S.backButtonText, { color: theme.primary }]}>
-              ← Back to Categories
-            </Text>
-          </TouchableOpacity>
+          {/* ⭐ HD CATEGORY HERO BANNER */}
+          <View style={S.categoryHeroContainer}>
+            <ImageBackground
+              source={{ uri: getCategoryImage(selectedCategory) }}
+              style={S.categoryHeroImage}
+              imageStyle={{ borderRadius: 24 }}
+            >
+              <LinearGradient
+                colors={['rgba(0,0,0,0.35)', 'rgba(0,0,0,0.5)', 'rgba(8,12,24,0.92)']}
+                locations={[0, 0.45, 1]}
+                style={S.categoryHeroOverlay}
+              >
+                {/* Top Nav Row inside banner */}
+                <View style={S.categoryHeroTopRow}>
+                  <TouchableOpacity
+                    style={S.categoryHeroBackBtn}
+                    onPress={() => {
+                      setSelectedCategory(null);
+                      setIsCategoryEditMode(false);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={S.categoryHeroBackText}>← Back</Text>
+                  </TouchableOpacity>
 
-          {/* ⭐ Category Header with Gradient */}
-          <View
-            style={[
-              S.categoryHeaderBanner,
-              { backgroundColor: catColors.primary },
-            ]}
-          >
-            <Text style={S.categoryHeaderEmojiBig}>{cat.emoji}</Text>
-            <View style={S.categoryTitleRow}>
-              <Text style={S.categoryHeaderTitleWhite}>
-                {selectedCategory}
-              </Text>
-              {isCustomCategory && (
-                <View style={S.customBadgeWhite}>
-                  <Text style={S.customBadgeTextWhite}>CUSTOM</Text>
+                  {isCustomCategory ? (
+                    <View style={S.categoryHeroCustomBadge}>
+                      <Text style={S.categoryHeroCustomBadgeText}>★ CUSTOM</Text>
+                    </View>
+                  ) : (
+                    <View style={S.categoryHeroProBadge}>
+                      <Text style={S.categoryHeroProBadgeText}>PRO WORKOUT</Text>
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
-            <Text style={S.categoryHeaderCountWhite}>
-              {cat.exercises.length} exercises
-            </Text>
+
+                {/* Bottom content inside banner */}
+                <View style={S.categoryHeroBottomContent}>
+                  <View style={[S.categoryHeroEmojiCircle, { backgroundColor: catColors.primary }]}>
+                    <Text style={S.categoryHeroEmojiText}>{cat.emoji}</Text>
+                  </View>
+                  <Text style={S.categoryHeroTitleText}>{selectedCategory}</Text>
+
+                  {/* Meta Pills Row */}
+                  <View style={S.categoryMetaPillsRow}>
+                    <View style={S.categoryMetaPill}>
+                      <Text style={S.categoryMetaPillText}>
+                        🔥 {cat.exercises.length} Exercises
+                      </Text>
+                    </View>
+                    <View style={S.categoryMetaPill}>
+                      <Text style={S.categoryMetaPillText}>
+                        ⚡ Strength & Tone
+                      </Text>
+                    </View>
+                    <View style={S.categoryMetaPill}>
+                      <Text style={S.categoryMetaPillText}>
+                        ⏱️ ~{Math.max(15, cat.exercises.length * 5)} min
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </LinearGradient>
+            </ImageBackground>
           </View>
 
-          {isCustomCategory ? (
-            <>
-              <TouchableOpacity
-                style={[S.addCustomButton, { backgroundColor: '#9b59b6' }]}
-                onPress={() => setAddExerciseModal(true)}
+          {/* Action Buttons: + Add Exercise & Edit Mode */}
+          <View style={S.categoryActionButtonsRow}>
+            <TouchableOpacity
+              style={S.actionAddExerciseBtn}
+              onPress={() => setAddExerciseModal(true)}
+              activeOpacity={0.85}
+            >
+              <LinearGradient
+                colors={['#8E2DE2', '#4A00E0']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={S.actionGradientBtn}
               >
-                <Text style={S.addCustomButtonText}>+ Add New Exercise</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  S.deleteCategoryButton,
-                  {
-                    backgroundColor: isDark ? '#3a1a1a' : '#ffebee',
-                    borderColor: theme.danger,
-                  },
-                ]}
-                onPress={() => handleDeleteCategory(selectedCategory)}
-              >
-                <Text style={[S.deleteCategoryButtonText, { color: theme.danger }]}>
-                  🗑️ Delete This Category
-                </Text>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <View
+                <Text style={S.actionAddExerciseBtnText}>＋ Add Exercise</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+
+            <TouchableOpacity
               style={[
-                S.defaultCategoryNote,
+                S.actionEditModeBtn,
                 {
-                  backgroundColor: isDark ? '#3a301a' : '#fff8e1',
-                  borderLeftColor: theme.warning,
+                  backgroundColor: isCategoryEditMode
+                    ? '#00B894'
+                    : isDark
+                    ? '#1E293B'
+                    : '#FFFFFF',
+                  borderColor: isCategoryEditMode ? '#00B894' : theme.border,
                 },
               ]}
+              onPress={() => setIsCategoryEditMode(!isCategoryEditMode)}
+              activeOpacity={0.85}
             >
-              <Text style={[S.defaultCategoryNoteText, { color: theme.textSecondary }]}>
-                💡 Default category • Create custom category to add exercises
-              </Text>
-              <TouchableOpacity
-                style={[S.createFromDefaultButton, { backgroundColor: '#9b59b6' }]}
-                onPress={() => {
-                  setSelectedCategory(null);
-                  setCreateCategoryModal(true);
-                }}
+              <Text
+                style={[
+                  S.actionEditModeBtnText,
+                  { color: isCategoryEditMode ? '#FFFFFF' : theme.text },
+                ]}
               >
-                <Text style={S.createFromDefaultButtonText}>
-                  + Create Custom Category
-                </Text>
-              </TouchableOpacity>
-            </View>
+                {isCategoryEditMode ? '✓ Done Editing' : '✏️ Edit Mode'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {isCustomCategory && (
+            <TouchableOpacity
+              style={[
+                S.deleteCategoryButton,
+                {
+                  backgroundColor: isDark ? '#3a1a1a' : '#ffebee',
+                  borderColor: theme.danger,
+                  marginBottom: 12,
+                },
+              ]}
+              onPress={() => handleDeleteCategory(selectedCategory)}
+            >
+              <Text style={[S.deleteCategoryButtonText, { color: theme.danger }]}>
+                🗑️ Delete This Category
+              </Text>
+            </TouchableOpacity>
           )}
 
           {cat.exercises.length === 0 ? (
@@ -850,73 +1121,128 @@ const WorkoutScreen = ({ navigation }) => {
                 No Exercises Yet
               </Text>
               <Text style={[S.emptyText, { color: theme.textSecondary }]}>
-                Tap "+ Add New Exercise"
+                Tap "＋ Add Exercise" to build your workout
               </Text>
             </View>
           ) : (
             cat.exercises.map((exercise) => {
               const isDone = completedToday.includes(exercise.id);
+              const exerciseImg = getExerciseImage(exercise.name, selectedCategory);
               return (
-                <View key={exercise.id} style={S.exerciseRow}>
+                <View key={exercise.id} style={S.exerciseCardWrapper}>
                   <TouchableOpacity
                     style={[
-                      S.exerciseItem,
-                      S.exerciseItemFlex,
+                      S.modernExerciseCard,
                       {
                         backgroundColor: isDone
-                          ? isDark
-                            ? '#1a3a1a'
-                            : '#e8f8f0'
+                          ? isDark ? '#14281E' : '#EDFBF4'
                           : theme.card,
-                        borderColor: theme.border,
-                        borderLeftWidth: isDone ? 4 : 1,
-                        borderLeftColor: isDone ? theme.success : theme.border,
+                        borderColor: isDone ? '#00C853' : theme.border,
                       },
                     ]}
-                    onPress={() => toggleCompleted(exercise.id, exercise.name)}
-                    activeOpacity={0.7}
+                    onPress={() => toggleCompleted(exercise, selectedCategory)}
+                    activeOpacity={0.8}
                   >
+                    {/* HD Thumbnail Image with Overlay */}
+                    <View style={S.exerciseThumbContainer}>
+                      <Image
+                        source={{ uri: exerciseImg }}
+                        style={S.exerciseThumbImage}
+                        resizeMode="cover"
+                      />
+                      {isDone && (
+                        <View style={S.exerciseThumbDoneOverlay}>
+                          <Text style={S.exerciseThumbDoneCheck}>✓</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* Middle: Title, Sets & Reps Chips */}
+                    <View style={S.exerciseCardInfo}>
+                      <View style={S.exerciseCardHeaderRow}>
+                        <Text
+                          style={[
+                            S.modernExerciseName,
+                            {
+                              color: isDone ? theme.textSecondary : theme.text,
+                              textDecorationLine: isDone ? 'line-through' : 'none',
+                            },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {exercise.name}
+                        </Text>
+                        {exercise.isCustom && (
+                          <View style={S.microCustomBadge}>
+                            <Text style={S.microCustomBadgeText}>Custom</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      {/* Sets × Reps Chips */}
+                      <View style={S.exerciseChipsRow}>
+                        <View
+                          style={[
+                            S.exerciseChip,
+                            { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' },
+                          ]}
+                        >
+                          <Text style={[S.exerciseChipText, { color: theme.textSecondary }]}>
+                            ⚡ {exercise.sets} Sets
+                          </Text>
+                        </View>
+                        <View
+                          style={[
+                            S.exerciseChip,
+                            { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#F1F5F9' },
+                          ]}
+                        >
+                          <Text style={[S.exerciseChipText, { color: theme.textSecondary }]}>
+                            🔄 {exercise.reps} Reps
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Right: Modern Circular Checkbox */}
                     <View
                       style={[
-                        S.checkbox,
+                        S.modernCheckbox,
                         {
-                          borderColor: isDone ? theme.success : theme.border,
-                          backgroundColor: isDone ? theme.success : 'transparent',
+                          backgroundColor: isDone ? '#00C853' : 'transparent',
+                          borderColor: isDone ? '#00C853' : (isDark ? '#4B5563' : '#CBD5E1'),
                         },
                       ]}
                     >
-                      {isDone && <Text style={S.checkmark}>✓</Text>}
-                    </View>
-                    <View style={S.exerciseInfo}>
-                      <Text
-                        style={[
-                          S.exerciseName,
-                          {
-                            color: isDone ? theme.textSecondary : theme.text,
-                            textDecorationLine: isDone ? 'line-through' : 'none',
-                          },
-                        ]}
-                      >
-                        {exercise.name}
-                      </Text>
-                      <Text style={[S.exerciseDetails, { color: theme.textSecondary }]}>
-                        {exercise.sets} Sets × {exercise.reps} Reps
-                      </Text>
+                      {isDone && <Text style={S.modernCheckmark}>✓</Text>}
                     </View>
                   </TouchableOpacity>
 
-                  {isCustomCategory && (
-                    <TouchableOpacity
-                      style={[
-                        S.deleteExerciseButton,
-                        { backgroundColor: isDark ? '#3a1a1a' : '#ffebee' },
-                      ]}
-                      onPress={() => handleDeleteExercise(selectedCategory, exercise)}
-                    >
-                      <Text style={[S.deleteExerciseText, { color: theme.danger }]}>
-                        ✕
-                      </Text>
-                    </TouchableOpacity>
+                  {/* Edit and Delete Buttons - Visible when Edit Mode is active */}
+                  {isCategoryEditMode && (
+                    <View style={S.editActionsContainer}>
+                      <TouchableOpacity
+                        style={[
+                          S.modernEditActionBtn,
+                          { backgroundColor: isDark ? '#1E293B' : '#EEF2F6' },
+                        ]}
+                        onPress={() => handleStartEditExercise(exercise)}
+                      >
+                        <Text style={{ fontSize: 15 }}>✏️</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[
+                          S.modernDeleteActionBtn,
+                          { backgroundColor: isDark ? '#3A1A1A' : '#FFEAEA' },
+                        ]}
+                        onPress={() => handleDeleteExercise(selectedCategory, exercise)}
+                      >
+                        <Text style={[S.modernDeleteActionText, { color: theme.danger }]}>
+                          ✕
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
                   )}
                 </View>
               );
@@ -967,7 +1293,7 @@ const WorkoutScreen = ({ navigation }) => {
           {/* ⭐ IMAGE CARDS GRID */}
           <View style={S.categoriesImageGrid}>
             {Object.keys(categories).map((category) => {
-              const isCustom = !!customCategories[category];
+              const isCustom = !defaultWorkoutData[category];
               return (
                 <CategoryImageCard
                   key={category}
@@ -1135,7 +1461,24 @@ const WorkoutScreen = ({ navigation }) => {
                   </View>
 
                   <View style={[S.planExercises, { borderTopColor: theme.borderLight }]}>
-                    {plan.exercises.slice(0, 3).map((e) => {
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }}>
+                      <View style={{ flexDirection: 'row', gap: 8 }}>
+                        {plan.exercises.map((e) => (
+                          <View key={e.id} style={S.planExerciseThumbBox}>
+                            <Image
+                              source={{ uri: getExerciseImage(e.name, plan.name) }}
+                              style={S.planExerciseMiniThumb}
+                              resizeMode="cover"
+                            />
+                            <Text style={[S.planExerciseThumbName, { color: theme.text }]} numberOfLines={1}>
+                              {e.name}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    </ScrollView>
+
+                    {plan.exercises.slice(0, 2).map((e) => {
                       const done = isPlanExerciseCompleted(plan.id, e.id);
                       return (
                         <Text
@@ -1145,13 +1488,13 @@ const WorkoutScreen = ({ navigation }) => {
                             { color: done ? theme.success : theme.textSecondary, textDecorationLine: done ? 'line-through' : 'none' },
                           ]}
                         >
-                          {done ? '✅' : '▸'} {e.name}
+                          {done ? '✅' : '▸'} {e.name} ({e.sets} Sets × {e.reps} Reps)
                         </Text>
                       );
                     })}
-                    {plan.exercises.length > 3 && (
+                    {plan.exercises.length > 2 && (
                       <Text style={[S.planExerciseMore, { color: theme.primary }]}>
-                        +{plan.exercises.length - 3} more exercises
+                        +{plan.exercises.length - 2} more exercises
                       </Text>
                     )}
                   </View>
@@ -1356,6 +1699,25 @@ const WorkoutScreen = ({ navigation }) => {
               onChangeText={setNewExerciseName}
               autoFocus
             />
+
+            {newExerciseName.trim().length > 1 && (
+              <View style={S.editModalThumbPreview}>
+                <Image
+                  source={{ uri: getExerciseImage(newExerciseName, selectedCategory) }}
+                  style={S.editModalThumbImg}
+                  resizeMode="cover"
+                />
+                <View style={S.editModalThumbMeta}>
+                  <Text style={{ fontSize: 12, color: theme.success, fontWeight: '700' }}>
+                    ✓ Matching exercise image found
+                  </Text>
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>
+                    Auto-paired with "{newExerciseName.trim()}"
+                  </Text>
+                </View>
+              </View>
+            )}
+
             <View style={S.rowInputs}>
               <View style={{ flex: 1, marginRight: 8 }}>
                 <Text style={[S.modalLabel, { color: theme.text }]}>Sets</Text>
@@ -1403,6 +1765,111 @@ const WorkoutScreen = ({ navigation }) => {
               onPress={addCustomExercise}
             >
               <Text style={S.modalButtonText}>Add Exercise</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* EDIT EXERCISE MODAL */}
+      <Modal
+        animationType="slide"
+        transparent
+        visible={editExerciseModal}
+        onRequestClose={() => setEditExerciseModal(false)}
+      >
+        <View style={S.modalOverlay}>
+          <View style={[S.modalContent, { backgroundColor: theme.card }]}>
+            <View style={S.modalHeader}>
+              <Text style={[S.modalTitle, { color: theme.text }]}>
+                Edit Exercise
+              </Text>
+              <TouchableOpacity onPress={() => setEditExerciseModal(false)}>
+                <Text style={[S.modalClose, { color: theme.textSecondary }]}>
+                  ✕
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={S.editModalThumbPreview}>
+              <Image
+                source={{ uri: getExerciseImage(editExerciseName || editingExercise?.name, selectedCategory) }}
+                style={S.editModalThumbImg}
+                resizeMode="cover"
+              />
+              <View style={S.editModalThumbMeta}>
+                <Text style={[S.modalSubtitle, { color: theme.textSecondary, marginBottom: 0 }]}>
+                  Category: <Text style={{ fontWeight: 'bold', color: theme.text }}>{selectedCategory}</Text>
+                </Text>
+                <Text style={{ fontSize: 12, color: theme.primary, fontWeight: '700', marginTop: 4 }}>
+                  Matching HD Exercise Picture
+                </Text>
+              </View>
+            </View>
+
+            <Text style={[S.modalLabel, { color: theme.text }]}>
+              Exercise Name
+            </Text>
+            <TextInput
+              style={[
+                S.modalInput,
+                {
+                  backgroundColor: theme.inputBackground,
+                  color: theme.text,
+                  borderColor: theme.inputBorder,
+                  borderWidth: 1,
+                },
+              ]}
+              placeholder="e.g., Bench Press"
+              placeholderTextColor={theme.inputPlaceholder}
+              value={editExerciseName}
+              onChangeText={setEditExerciseName}
+            />
+            <View style={S.rowInputs}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Text style={[S.modalLabel, { color: theme.text }]}>Sets</Text>
+                <TextInput
+                  style={[
+                    S.modalInput,
+                    {
+                      backgroundColor: theme.inputBackground,
+                      color: theme.text,
+                      borderColor: theme.inputBorder,
+                      borderWidth: 1,
+                    },
+                  ]}
+                  placeholder="3"
+                  placeholderTextColor={theme.inputPlaceholder}
+                  value={editExerciseSets}
+                  onChangeText={setEditExerciseSets}
+                  keyboardType="numeric"
+                  maxLength={2}
+                />
+              </View>
+              <View style={{ flex: 1, marginLeft: 8 }}>
+                <Text style={[S.modalLabel, { color: theme.text }]}>Reps</Text>
+                <TextInput
+                  style={[
+                    S.modalInput,
+                    {
+                      backgroundColor: theme.inputBackground,
+                      color: theme.text,
+                      borderColor: theme.inputBorder,
+                      borderWidth: 1,
+                    },
+                  ]}
+                  placeholder="12"
+                  placeholderTextColor={theme.inputPlaceholder}
+                  value={editExerciseReps}
+                  onChangeText={setEditExerciseReps}
+                  keyboardType="numeric"
+                  maxLength={3}
+                />
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[S.modalButton, { backgroundColor: theme.primary }]}
+              onPress={handleSaveEditExercise}
+            >
+              <Text style={S.modalButtonText}>Save Changes</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1467,6 +1934,19 @@ const WorkoutScreen = ({ navigation }) => {
                         ]}
                         onPress={() => toggleExerciseInPlan(exercise)}
                       >
+                        <Image
+                          source={{ uri: getExerciseImage(exercise.name, category) }}
+                          style={S.pickerExerciseThumb}
+                          resizeMode="cover"
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={[S.pickerItemText, { color: theme.text }]}>
+                            {exercise.name}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>
+                            {exercise.sets} Sets × {exercise.reps} Reps
+                          </Text>
+                        </View>
                         <View
                           style={[
                             S.checkbox,
@@ -1482,9 +1962,6 @@ const WorkoutScreen = ({ navigation }) => {
                         >
                           {isSelected && <Text style={S.checkmark}>✓</Text>}
                         </View>
-                        <Text style={[S.pickerItemText, { color: theme.text }]}>
-                          {exercise.name}
-                        </Text>
                       </TouchableOpacity>
                     );
                   })}
@@ -1968,14 +2445,21 @@ const dynamicStyles = (theme, isDark) =>
     exerciseName: { fontSize: 16, fontWeight: '600' },
     exerciseDetails: { fontSize: 13, marginTop: 2 },
 
-    deleteExerciseButton: {
-      width: 40,
-      height: 40,
-      borderRadius: 20,
+    editExerciseButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
       justifyContent: 'center',
       alignItems: 'center',
     },
-    deleteExerciseText: { fontSize: 16, fontWeight: 'bold' },
+    deleteExerciseButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    deleteExerciseText: { fontSize: 15, fontWeight: 'bold' },
 
     emptyState: {
       borderRadius: 16,
@@ -2017,7 +2501,343 @@ const dynamicStyles = (theme, isDark) =>
       justifyContent: 'space-between',
     },
 
-    // ⭐ CATEGORY HEADER BANNER (Gradient)
+    // ═══════════ HD CATEGORY HERO BANNER ═══════════
+    categoryHeroContainer: {
+      width: '100%',
+      height: 230,
+      borderRadius: 24,
+      overflow: 'hidden',
+      marginBottom: 16,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.28,
+      shadowRadius: 16,
+      elevation: 8,
+    },
+    categoryHeroImage: {
+      width: '100%',
+      height: '100%',
+    },
+    categoryHeroOverlay: {
+      flex: 1,
+      justifyContent: 'space-between',
+      padding: 18,
+    },
+    categoryHeroTopRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    categoryHeroBackBtn: {
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.25)',
+    },
+    categoryHeroBackText: {
+      color: '#FFFFFF',
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    categoryHeroCustomBadge: {
+      backgroundColor: 'rgba(155, 89, 182, 0.92)',
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 12,
+    },
+    categoryHeroCustomBadgeText: {
+      color: '#FFFFFF',
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 1,
+    },
+    categoryHeroProBadge: {
+      backgroundColor: 'rgba(255, 255, 255, 0.22)',
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: 'rgba(255, 255, 255, 0.35)',
+    },
+    categoryHeroProBadgeText: {
+      color: '#FFFFFF',
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 1,
+    },
+    categoryHeroBottomContent: {
+      justifyContent: 'flex-end',
+    },
+    categoryHeroEmojiCircle: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginBottom: 8,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.3,
+      shadowRadius: 5,
+      elevation: 4,
+    },
+    categoryHeroEmojiText: {
+      fontSize: 22,
+    },
+    categoryHeroTitleText: {
+      fontSize: 28,
+      fontWeight: '900',
+      color: '#FFFFFF',
+      letterSpacing: -0.5,
+      textShadowColor: 'rgba(0,0,0,0.6)',
+      textShadowOffset: { width: 0, height: 2 },
+      textShadowRadius: 6,
+    },
+    categoryMetaPillsRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 6,
+      marginTop: 8,
+    },
+    categoryMetaPill: {
+      backgroundColor: 'rgba(255,255,255,0.2)',
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.15)',
+    },
+    categoryMetaPillText: {
+      color: '#FFFFFF',
+      fontSize: 11,
+      fontWeight: '700',
+    },
+
+    // ═══════════ CATEGORY ACTION BUTTONS ═══════════
+    categoryActionButtonsRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 16,
+    },
+    actionAddExerciseBtn: {
+      flex: 1,
+      borderRadius: 14,
+      overflow: 'hidden',
+      shadowColor: '#4A00E0',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.25,
+      shadowRadius: 8,
+      elevation: 4,
+    },
+    actionGradientBtn: {
+      paddingVertical: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    actionAddExerciseBtnText: {
+      color: '#FFFFFF',
+      fontSize: 14,
+      fontWeight: '800',
+      letterSpacing: 0.3,
+    },
+    actionEditModeBtn: {
+      flex: 1,
+      borderRadius: 14,
+      borderWidth: 1,
+      paddingVertical: 14,
+      alignItems: 'center',
+      justifyContent: 'center',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.08,
+      shadowRadius: 4,
+      elevation: 2,
+    },
+    actionEditModeBtnText: {
+      fontSize: 14,
+      fontWeight: '800',
+      letterSpacing: 0.3,
+    },
+
+    // ═══════════ MODERN EXERCISE CARD WITH HD THUMBNAIL ═══════════
+    exerciseCardWrapper: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 12,
+      gap: 8,
+    },
+    modernExerciseCard: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      padding: 10,
+      borderRadius: 18,
+      borderWidth: 1,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.06,
+      shadowRadius: 6,
+      elevation: 3,
+    },
+    exerciseThumbContainer: {
+      width: 62,
+      height: 62,
+      borderRadius: 14,
+      overflow: 'hidden',
+      backgroundColor: '#1E293B',
+      position: 'relative',
+    },
+    exerciseThumbImage: {
+      width: '100%',
+      height: '100%',
+    },
+    exerciseThumbDoneOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: 'rgba(0, 200, 83, 0.75)',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    exerciseThumbDoneCheck: {
+      color: '#FFFFFF',
+      fontSize: 22,
+      fontWeight: '900',
+    },
+    exerciseCardInfo: {
+      flex: 1,
+      marginLeft: 12,
+      marginRight: 8,
+    },
+    exerciseCardHeaderRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      marginBottom: 5,
+    },
+    modernExerciseName: {
+      fontSize: 15,
+      fontWeight: '800',
+      letterSpacing: -0.2,
+      flexShrink: 1,
+    },
+    microCustomBadge: {
+      backgroundColor: 'rgba(155, 89, 182, 0.15)',
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 6,
+    },
+    microCustomBadgeText: {
+      color: '#9B59B6',
+      fontSize: 9,
+      fontWeight: '800',
+    },
+    exerciseChipsRow: {
+      flexDirection: 'row',
+      gap: 6,
+    },
+    exerciseChip: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 8,
+    },
+    exerciseChipText: {
+      fontSize: 11,
+      fontWeight: '700',
+    },
+    modernCheckbox: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      borderWidth: 2,
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginRight: 4,
+    },
+    modernCheckmark: {
+      color: '#FFFFFF',
+      fontSize: 14,
+      fontWeight: '900',
+    },
+    editActionsContainer: {
+      flexDirection: 'row',
+      gap: 6,
+    },
+    modernEditActionBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      justifyContent: 'center',
+      alignItems: 'center',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 3,
+      elevation: 2,
+    },
+    modernDeleteActionBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      justifyContent: 'center',
+      alignItems: 'center',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 3,
+      elevation: 2,
+    },
+    modernDeleteActionText: {
+      fontSize: 16,
+      fontWeight: '900',
+    },
+
+    pickerExerciseThumb: {
+      width: 44,
+      height: 44,
+      borderRadius: 10,
+      marginRight: 10,
+      backgroundColor: '#1E293B',
+    },
+    planExerciseThumbBox: {
+      alignItems: 'center',
+      width: 68,
+      marginRight: 8,
+    },
+    planExerciseMiniThumb: {
+      width: 64,
+      height: 48,
+      borderRadius: 10,
+      marginBottom: 4,
+      backgroundColor: '#1E293B',
+    },
+    planExerciseThumbName: {
+      fontSize: 10,
+      fontWeight: '700',
+      textAlign: 'center',
+    },
+    editModalThumbPreview: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 14,
+      padding: 10,
+      borderRadius: 14,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F1F5F9',
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(255,255,255,0.1)' : '#E2E8F0',
+    },
+    editModalThumbImg: {
+      width: 54,
+      height: 54,
+      borderRadius: 12,
+      marginRight: 12,
+      backgroundColor: '#1E293B',
+    },
+    editModalThumbMeta: {
+      flex: 1,
+    },
+
+    // Legacy Category Header Banner (kept for backward compatibility)
     categoryHeaderBanner: {
       borderRadius: 20,
       padding: 24,
