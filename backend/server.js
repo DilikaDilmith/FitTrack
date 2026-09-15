@@ -23,6 +23,7 @@ mongoose.connect(process.env.MONGO_URI)
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/workouts', require('./routes/workouts'));
+app.use('/api/library', require('./routes/library'));
 app.use('/api/foods', require('./routes/foods'));
 app.use('/api/water', require('./routes/water'));
 app.use('/api/progress', require('./routes/progress'));
