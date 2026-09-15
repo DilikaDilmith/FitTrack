@@ -55,12 +55,15 @@ router.get('/weekly', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   try {
     const { workoutName, category, exercises, duration } = req.body;
+    if (!workoutName) {
+      return res.status(400).json({ error: 'Workout name is required' });
+    }
     const workout = new Workout({
       userId: req.userId,
       workoutName,
-      category,
-      exercises,
-      duration,
+      category: category || 'General',
+      exercises: Array.isArray(exercises) ? exercises : [],
+      duration: Number(duration) || 0,
     });
     await workout.save();
     res.status(201).json(workout);
